@@ -42,7 +42,7 @@ jobs:
             ENABLE_KERNELSU
             KERNELSU_TAG
             ADD_KPROBES_CONFIG
-            DISABLE-LTO
+            DISABLE_LTO
             ADD_OVERLAYFS_CONFIG
             DISABLE_CC_WERROR
             APPLY_KSU_PATCH
@@ -189,6 +189,27 @@ jobs:
           echo "LOCALVERSION=" >> $GITHUB_ENV
         fi
 
+    - name: Fix MTK 4.19 BSP layout
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+    
+        # Create missing fs files if KernelSU expects them
+        for f in exec open read_write stat; do
+          if [ ! -f fs/$f.c ]; then
+            echo "/* dummy $f.c for KernelSU */" > fs/$f.c
+          fi
+        done
+    
+        # Dummy input.c (MTK kernels often miss this)
+        mkdir -p drivers/input
+        if [ ! -f drivers/input/input.c ]; then
+          echo '#include <linux/input.h>' > drivers/input/input.c
+          echo 'void dummy_input(void) {}' >> drivers/input/input.c
+        fi
+
+        # Disable broken subarch include (MTK BSP issue)
+        sed -i 's/^include scripts\/subarch.include/# include scripts\/subarch.include/' Makefile
+
     - name: Download source boot image
       if: env.BUILD_BOOT_IMG == 'true'
       run: |
@@ -202,6 +223,7 @@ jobs:
     - name: Setup KernelSU
       if: env.ENABLE_KERNELSU == 'true'
       run: |
+        echo "CONFIG_MODULES=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
         KSU_VERSION=$(cd KernelSU && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
@@ -228,7 +250,7 @@ jobs:
         if [ ${{ env.ADD_OVERLAYFS_CONFIG }} = true ]; then
             echo "CONFIG_OVERLAY_FS=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
         fi
-        if [ ${{ env.DISABLE-LTO }} = true ]; then
+        if [ ${{ env.DISABLE_LTO }} = true ]; then
             sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
             sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
             sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
@@ -245,9 +267,11 @@ jobs:
         key: build-kernel-${{ env.DEVICE }}${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}
         max-size: 2G
 
+      
     - name: Build kernel
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        export KBUILD_OUTPUT=out
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
